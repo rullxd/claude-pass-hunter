@@ -2,6 +2,7 @@ import os
 import re
 import time
 import random
+import json
 import threading
 import urllib.request
 import urllib.parse
@@ -52,17 +53,31 @@ SEEN = load_seen()
 
 def send_telegram(text):
     if not BOT_TOKEN or not CHAT_ID:
-        print("[!] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not configured.")
-        return False
+        return None
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = urllib.parse.urlencode({"chat_id": CHAT_ID, "text": text, "disable_web_page_preview": "false"}).encode()
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/x-www-form-urlencoded"})
     try:
         with urllib.request.urlopen(req, timeout=8) as r:
-            return r.status == 200
+            data = json.loads(r.read())
+            if data.get("ok"):
+                return data["result"]["message_id"]
     except Exception as e:
         print(f"[!] Telegram send error: {e}", flush=True)
+    return None
+
+def edit_telegram(message_id, text):
+    if not BOT_TOKEN or not CHAT_ID or not message_id:
         return False
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
+    payload = urllib.parse.urlencode({"chat_id": CHAT_ID, "message_id": message_id, "text": text, "disable_web_page_preview": "false"}).encode()
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return r.status == 200
+    except Exception as e:
+        print(f"[!] Telegram edit error: {e}", flush=True)
+    return False
 
 def check_anthropic_api(code):
     url = f"https://claude.ai/api/referral/code/{code}"
@@ -91,14 +106,33 @@ def dispatch_match(code, source_name):
             f.write(f"{code}\n")
 
     link = f"https://claude.ai/referral/{code}"
+    initial_msg = (
+        f"⚡ CLAUDE REFERRAL DETECTED!\n\n"
+        f"Link: {link}\n"
+        f"Source: {source_name}\n\n"
+        f"Status: ⏳ Verifying validity..."
+    )
     print(f"[{source_name}] New link detected: {link}", flush=True)
-    send_telegram(f"⚡ CLAUDE REFERRAL DETECTED!\n\nLink: {link}\nSource: {source_name}\n\nVerifying validity...")
+    msg_id = send_telegram(initial_msg)
 
+    # Concurrently check API
     is_valid, data = check_anthropic_api(code)
     status_str = "🔥 VALID & READY TO CLAIM!" if is_valid else "⚠️ ALREADY CLAIMED / EXPIRED"
-    update_msg = f"Status Update: {status_str}\nLink: {link}\nDetails: {data}"
-    send_telegram(update_msg)
-    print(f"[{source_name}] {code} -> {status_str}", flush=True)
+    
+    updated_msg = (
+        f"{'⚡ CLAUDE PRO 7D GUEST PASS!' if is_valid else '📌 CLAUDE REFERRAL'}\n\n"
+        f"Link: {link}\n"
+        f"Source: {source_name}\n\n"
+        f"Status: {status_str}\n\n"
+        f"{'👉 CLAIM NOW BEFORE IT EXPIRES!' if is_valid else 'This link has already been claimed or expired.'}"
+    )
+
+    if msg_id:
+        edit_telegram(msg_id, updated_msg)
+    else:
+        send_telegram(updated_msg)
+
+    print(f"[{source_name}] {code} -> {status_str} (in-place edited)", flush=True)
 
 def fetch_feed(feed_url):
     for _ in range(3):
@@ -133,7 +167,7 @@ def agent_worker(name, feeds, poll_interval):
         time.sleep(poll_interval)
 
 def main():
-    print(f"[*] Starting Multi-Agent Claude Referral Hunter (Proxies: {len(PROXIES)})...", flush=True)
+    print(f"[*] Starting Multi-Agent Claude Referral Hunter (In-place Edit Mode)...", flush=True)
 
     agents = [
         ("Agent-ClaudeCode", [
