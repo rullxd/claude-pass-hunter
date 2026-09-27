@@ -1,0 +1,9 @@
+.env
+*.pyc
+__pycache__/
+seen_passes.txt
+proxies.txt
+*.log
+.DS_Store
+.venv/
+env/
