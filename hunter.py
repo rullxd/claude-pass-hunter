@@ -6,7 +6,7 @@ import json
 import threading
 import urllib.request
 import urllib.parse
-import xml.etree.ElementTree as ET
+from datetime import datetime
 from curl_cffi import requests
 from dotenv import load_dotenv
 
@@ -23,7 +23,7 @@ SEEN_FILE = os.path.join(BASE_DIR, "seen_passes.txt")
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 }
-LINK_RE = re.compile(r"https?://(?:www\.)?claude\.ai/referral/([a-zA-Z0-9_\-]+)", re.IGNORECASE)
+LINK_RE = re.compile(r"claude\.ai/referral/([a-zA-Z0-9_\-]+)", re.IGNORECASE)
 
 seen_lock = threading.Lock()
 file_lock = threading.Lock()
@@ -112,7 +112,7 @@ def dispatch_match(code, source_name):
         f"Source: {source_name}\n\n"
         f"Status: ⏳ Verifying validity..."
     )
-    print(f"[{source_name}] New link detected: {link}", flush=True)
+    print(f"\n[!] [{source_name}] NEW REFERRAL FOUND: {link}", flush=True)
     msg_id = send_telegram(initial_msg)
 
     # Concurrently check API
@@ -141,51 +141,53 @@ def fetch_feed(feed_url):
         req = urllib.request.Request(feed_url, headers=HEADERS)
         try:
             with opener.open(req, timeout=6) as r:
-                return r.read()
+                return r.read().decode("utf-8", errors="ignore")
         except Exception:
             continue
     return None
 
 def agent_worker(name, feeds, poll_interval):
     print(f"[*] Agent '{name}' active. Poll interval: {poll_interval}s", flush=True)
-    ns = {"atom": "http://www.w3.org/2005/Atom"}
+    cycle = 0
     while True:
+        cycle += 1
         for feed in feeds:
-            raw = fetch_feed(feed)
-            if not raw:
+            raw_text = fetch_feed(feed)
+            if not raw_text:
                 continue
-            try:
-                root = ET.fromstring(raw)
-                for entry in root.findall("atom:entry", ns):
-                    c = entry.find("atom:content", ns)
-                    txt = c.text if c is not None else ""
-                    for code in LINK_RE.findall(txt):
-                        dispatch_match(code, name)
-            except Exception:
-                for code in LINK_RE.findall(raw.decode("utf-8", errors="ignore")):
-                    dispatch_match(code, name)
+            codes = LINK_RE.findall(raw_text)
+            for code in codes:
+                dispatch_match(code, name)
+
+        if cycle % 20 == 0:
+            ts = datetime.now().strftime("%H:%M:%S")
+            print(f"[{ts}] [{name}] Active & monitoring {len(feeds)} feeds | 0 new links", flush=True)
+
         time.sleep(poll_interval)
 
 def main():
     print(f"[*] Starting Multi-Agent Claude Referral Hunter (In-place Edit Mode)...", flush=True)
+    print(f"[*] Loaded {len(PROXIES)} rotating proxies from {PROXIES_FILE}.", flush=True)
+    print(f"[*] Database: {len(SEEN)} previously seen passes.", flush=True)
 
+    # Use old.reddit.com to prevent 429 rate limit blocks
     agents = [
         ("Agent-ClaudeCode", [
-            "https://www.reddit.com/r/ClaudeCode/comments.rss?limit=50",
-            "https://www.reddit.com/r/ClaudeCode/new.rss?limit=50"
+            "https://old.reddit.com/r/ClaudeCode/comments/.rss?limit=50",
+            "https://old.reddit.com/r/ClaudeCode/new/.rss?limit=50"
         ], 2),
         ("Agent-ClaudeAI", [
-            "https://www.reddit.com/r/ClaudeAI/comments.rss?limit=50",
-            "https://www.reddit.com/r/ClaudeAI/new.rss?limit=50",
-            "https://www.reddit.com/r/ClaudeAI/comments/1pnj9zd.rss?sort=new&limit=50"
+            "https://old.reddit.com/r/ClaudeAI/comments/.rss?limit=50",
+            "https://old.reddit.com/r/ClaudeAI/new/.rss?limit=50",
+            "https://old.reddit.com/r/ClaudeAI/comments/1pnj9zd/.rss?sort=new&limit=50"
         ], 3),
         ("Agent-Anthropic", [
-            "https://www.reddit.com/r/Anthropic/comments.rss?limit=50",
-            "https://www.reddit.com/r/Anthropic/new.rss?limit=50"
+            "https://old.reddit.com/r/Anthropic/comments/.rss?limit=50",
+            "https://old.reddit.com/r/Anthropic/new/.rss?limit=50"
         ], 4),
         ("Agent-GlobalSearch", [
-            "https://www.reddit.com/search.rss?q=claude.ai%2Freferral&sort=new&limit=50",
-            "https://www.reddit.com/search.rss?q=%22guest+pass%22+claude&sort=new&limit=50"
+            "https://old.reddit.com/search.rss?q=claude.ai%2Freferral&sort=new&limit=50",
+            "https://old.reddit.com/search.rss?q=%22guest+pass%22+claude&sort=new&limit=50"
         ], 5),
     ]
 
